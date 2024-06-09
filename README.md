@@ -1,3 +1,5 @@
+![image](icon.png)
+
 # README
 
 This is a minimalist documentation site generator written in Go.
