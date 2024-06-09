@@ -1,3 +1,9 @@
+// TODO Table of contents appears better, formatted to appear always at the side of every single page
+// TODO syntax highlighting with copy button
+// TODO Search feature
+// TODO Better Image Rendering / Parsing from markdown, somehow making it pick up from me specifying the local directory so I can preview it in typora then that automatically translating in the img folder in site later on
+// TODO Image Optimization for the static generated websites
+
 package main
 
 import (
