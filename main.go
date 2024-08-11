@@ -1,323 +1,213 @@
-// TODO Table of contents appears better, formatted to appear always at the side of every single page
-// TODO syntax highlighting with copy button
-// TODO Search feature
-// TODO Better Image Rendering / Parsing from markdown, somehow making it pick up from me specifying the local directory so I can preview it in typora then that automatically translating in the img folder in site later on
-// TODO Image Optimization for the static generated websites
-
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"text/template"
 
 	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/renderer/html"
 )
 
-// Page represents an HTML page
-type Page struct {
-	Title    string
-	Content  string
-	Dir      string
-	Filename string
-}
-
-// Configurations
 const (
-	inputDir  = "docs"
-	outputDir = "site"
-	indexFile = "index.html"
-	imgDir    = "img" // Folder for images within the docs directory
+	inputDir     = "./content" // Directory containing markdown files
+	outputDir    = "./public"  // Directory to output HTML files
+	cssSourceDir = "./css"     // Directory containing the CSS files
+	cssFile      = "main.css"  // Primitive CSS file to be copied
+	cssDestDir   = "css"       // Destination directory within the output directory
 )
-
-// Template for HTML files
-const htmlTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Title}}</title>
-    <link rel="preconnect" href="https://rsms.me/">
-    <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
-    <style>
-        :root {
-            font-family: Inter, sans-serif;
-            font-feature-settings: 'liga' 1, 'calt' 1; /* fix for Chrome */
-            color: #404040;
-        }
-        @supports (font-variation-settings: normal) {
-            :root { font-family: InterVariable, sans-serif; }
-        }
-        body {
-            padding: 20px;
-        }
-        h1, h2, h3, h4, h5, h6 {
-            color: #404040;
-        }
-        a {
-            color: #404040;
-			text-decoration: none;
-        }
-
-		a:hover {
-			font-weight: bold;
-		}
-    </style>
-</head>
-<body>
-    {{.Content}}
-</body>
-</html>`
-
-const indexTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Table of Contents</title>
-    <link rel="preconnect" href="https://rsms.me/">
-    <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
-    <style>
-        :root {
-            font-family: Inter, sans-serif;
-            font-feature-settings: 'liga' 1, 'calt' 1; /* fix for Chrome */
-            color: #404040;
-        }
-        @supports (font-variation-settings: normal) {
-            :root { font-family: InterVariable, sans-serif; }
-        }
-        body {
-            padding: 20px;
-        }
-        h1, h2, h3, h4, h5, h6 {
-            color: #404040;
-        }
-        a {
-            color: #404040;
-			text-decoration: none;
-        }
-
-		a:hover {
-			font-weight: bold;
-		}
-    </style>
-</head>
-<body>
-    <h1>Table of Contents</h1>
-    <ul>
-    {{range $dir, $pages := .}}
-        <li>{{ base $dir }}
-        <ul>
-        {{range $pages}}
-            <li><a href="{{.Dir}}/{{.Filename}}">{{.Title}}</a></li>
-        {{end}}
-        </ul>
-        </li>
-    {{end}}
-    </ul>
-</body>
-</html>`
 
 func main() {
-	currentDir, err := os.Getwd()
+	// Generate the site
+	generateSite()
+
+	// Serve the generated site
+	serveSite()
+}
+
+func generateSite() {
+	// Create the output directory if it doesn't exist
+	err := os.MkdirAll(outputDir, os.ModePerm)
 	if err != nil {
-		fmt.Printf("Error getting current directory: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to create output directory: %v", err)
 	}
 
-	inputPath := filepath.Join(currentDir, inputDir)
-
-	// Delete the output directory if it exists
-	err = os.RemoveAll(outputDir)
+	// Copy the CSS file to the output directory
+	err = copyCSSFile()
 	if err != nil {
-		fmt.Printf("Error deleting output directory: %v\n", err)
-		return
+		log.Fatalf("Failed to copy CSS file: %v", err)
 	}
 
-	// Copy img directory to outputDir
-	err = copyDir(filepath.Join(inputDir, imgDir), filepath.Join(outputDir, imgDir))
+	// Generate the site with navigation
+	err = filepath.Walk(inputDir, processFile)
 	if err != nil {
-		fmt.Printf("Error copying img directory: %v\n", err)
-		return
+		log.Fatalf("Error walking the path %q: %v", inputDir, err)
 	}
 
-	var pages []Page
+	fmt.Println("Site generated successfully.")
+}
 
-	err = filepath.Walk(inputPath, func(path string, info os.FileInfo, err error) error {
+func serveSite() {
+	// Serve files from the outputDir
+	fs := http.FileServer(http.Dir(outputDir))
+	http.Handle("/", fs)
+
+	// Start the server on port 8080
+	fmt.Println("Serving at http://localhost:8080...")
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+// processFile is called for each file found by filepath.Walk
+func processFile(path string, info os.FileInfo, err error) error {
+	if err != nil {
+		return err
+	}
+
+	// Skip directories
+	if info.IsDir() {
+		return nil
+	}
+
+	// Process only markdown files
+	if strings.HasSuffix(info.Name(), ".md") {
+		err = convertMarkdownToHTML(path)
+		if err != nil {
+			log.Printf("Failed to convert %s: %v", path, err)
+		}
+	}
+
+	return nil
+}
+
+// convertMarkdownToHTML converts a markdown file to HTML and saves it
+func convertMarkdownToHTML(mdPath string) error {
+	// Read the markdown file
+	mdContent, err := ioutil.ReadFile(mdPath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Convert markdown to HTML using goldmark
+	var htmlContent strings.Builder
+	md := goldmark.New()
+	err = md.Convert(mdContent, &htmlContent)
+	if err != nil {
+		return fmt.Errorf("failed to convert markdown to HTML: %w", err)
+	}
+
+	// Generate navigation bar
+	navBar := generateNavBar()
+
+	// Wrap content with <div class="medium-container">
+	finalHTML := fmt.Sprintf(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+    <link rel="stylesheet" href="/%s/%s">
+</head>
+<body>
+    %s
+    <div class="medium-container">
+        %s
+    </div>
+</body>
+</html>
+`, filepath.Base(mdPath), cssDestDir, cssFile, navBar, htmlContent.String())
+
+	// Determine output path
+	relPath, err := filepath.Rel(inputDir, mdPath)
+	if err != nil {
+		return fmt.Errorf("failed to determine relative path: %w", err)
+	}
+
+	htmlPath := filepath.Join(outputDir, strings.Replace(relPath, ".md", ".html", 1))
+
+	// Ensure output directory exists
+	err = os.MkdirAll(filepath.Dir(htmlPath), os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("failed to create directories: %w", err)
+	}
+
+	// Write the final HTML content to the output file
+	err = ioutil.WriteFile(htmlPath, []byte(finalHTML), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write HTML file: %w", err)
+	}
+
+	return nil
+}
+
+// copyCSSFile copies the CSS file from the source directory to the output directory
+func copyCSSFile() error {
+	srcPath := filepath.Join(cssSourceDir, cssFile)
+	destPath := filepath.Join(outputDir, cssDestDir, cssFile)
+
+	// Ensure the destination directory exists
+	err := os.MkdirAll(filepath.Dir(destPath), os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("failed to create CSS destination directory: %w", err)
+	}
+
+	// Copy the file
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open CSS source file: %w", err)
+	}
+	defer srcFile.Close()
+
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create CSS destination file: %w", err)
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy CSS file: %w", err)
+	}
+
+	return nil
+}
+
+// generateNavBar generates a navigation bar based on the markdown files and directories
+func generateNavBar() string {
+	var navBar strings.Builder
+
+	navBar.WriteString(`<div class="medium-container"><ul style="list-style: none; display: flex; gap: 10px;">`)
+
+	// Walk through the directory and create navigation links
+	filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if !info.IsDir() && strings.HasSuffix(info.Name(), ".md") {
-			relativePath, _ := filepath.Rel(inputPath, path)
-			dir := filepath.Dir(relativePath)
-			dir = strings.ReplaceAll(dir, " ", "")
-			page, err := processFile(path, dir)
+		if info.IsDir() && path != inputDir {
+			return nil
+		}
+
+		if strings.HasSuffix(info.Name(), ".md") {
+			relPath, err := filepath.Rel(inputDir, path)
 			if err != nil {
 				return err
 			}
-			pages = append(pages, page)
+			htmlFileName := strings.Replace(relPath, ".md", ".html", 1)
+			link := fmt.Sprintf(`<li><a href="/%s">%s</a></li>`, htmlFileName, strings.TrimSuffix(filepath.Base(info.Name()), ".md"))
+			navBar.WriteString(link)
 		}
 
 		return nil
 	})
 
-	if err != nil {
-		fmt.Printf("Error processing directory %s: %v\n", inputPath, err)
-		os.Exit(1)
-	}
-
-	for _, page := range pages {
-		err := generateHTML(page)
-		if err != nil {
-			fmt.Printf("Error generating HTML for page %s: %v\n", page.Title, err)
-		}
-	}
-
-	err = generateIndex(pages)
-	if err != nil {
-		fmt.Printf("Error generating index: %v\n", err)
-	}
-}
-
-func processFile(path string, dir string) (Page, error) {
-	input, err := ioutil.ReadFile(path)
-	if err != nil {
-		return Page{}, err
-	}
-
-	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	title = strings.ReplaceAll(title, " ", "")
-	content := convertMarkdownToHTML(input)
-
-	return Page{
-		Title:    title,
-		Content:  content,
-		Dir:      dir,
-		Filename: title + ".html",
-	}, nil
-}
-
-func convertMarkdownToHTML(input []byte) string {
-	var buf bytes.Buffer
-	md := goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
-		goldmark.WithRendererOptions(html.WithHardWraps()),
-	)
-	err := md.Convert(input, &buf)
-	if err != nil {
-		fmt.Printf("Error converting Markdown to HTML: %v\n", err)
-		return ""
-	}
-	return buf.String()
-}
-
-func generateHTML(page Page) error {
-	tmpl, err := template.New("page").Parse(htmlTemplate)
-	if err != nil {
-		return err
-	}
-
-	outputPath := filepath.Join(outputDir, page.Dir, page.Filename)
-	err = os.MkdirAll(filepath.Join(outputDir, page.Dir), os.ModePerm)
-	if err != nil {
-		return err
-	}
-
-	outputFile, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer outputFile.Close()
-
-	return tmpl.Execute(outputFile, page)
-}
-
-func generateIndex(pages []Page) error {
-	funcMap := template.FuncMap{
-		"base": func(path string) string {
-			return filepath.Base(path)
-		},
-	}
-
-	tmpl, err := template.New("index").Funcs(funcMap).Parse(indexTemplate)
-	if err != nil {
-		return err
-	}
-
-	// Organize pages by directory
-	dirMap := make(map[string][]Page)
-	for _, page := range pages {
-		dirMap[page.Dir] = append(dirMap[page.Dir], page)
-	}
-
-	outputFile, err := os.Create(filepath.Join(outputDir, indexFile))
-	if err != nil {
-		return err
-	}
-	defer outputFile.Close()
-
-	return tmpl.Execute(outputFile, dirMap)
-}
-
-// copyDir copies a whole directory recursively
-func copyDir(src string, dst string) error {
-	var err error
-	var fds []os.FileInfo
-	var srcinfo os.FileInfo
-
-	if srcinfo, err = os.Stat(src); err != nil {
-		return err
-	}
-
-	if err = os.MkdirAll(dst, srcinfo.Mode()); err != nil {
-		return err
-	}
-
-	if fds, err = ioutil.ReadDir(src); err != nil {
-		return err
-	}
-	for _, fd := range fds {
-		srcfp := filepath.Join(src, fd.Name())
-		dstfp := filepath.Join(dst, fd.Name())
-
-		if fd.IsDir() {
-			if err = copyDir(srcfp, dstfp); err != nil {
-				fmt.Println(err)
-			}
-		} else {
-			if err = copyFile(srcfp, dstfp); err != nil {
-				fmt.Println(err)
-			}
-		}
-	}
-	return nil
-}
-
-// copyFile copies a single file from src to dst
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err = io.Copy(out, in); err != nil {
-		return err
-	}
-
-	return out.Close()
+	navBar.WriteString(`</ul></div>`)
+	return navBar.String()
 }
